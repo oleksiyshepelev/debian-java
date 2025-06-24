@@ -11,16 +11,15 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
 fi
 
-step() { echo -e "\n${BLUE}▶️  $1${NC}"; }
-warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-info() { echo -e "${CYAN}ℹ️  $1${NC}"; }
-ok()   { echo -e "${GREEN}✅ $1${NC}"; }
-error() { echo -e "${RED}❌ $1${NC}"; }
+step()  { echo -e "\n${BLUE}▶️  $1${NC}"; }
+warn()  { echo -e "${YELLOW}⚠️  $1${NC}"; }
+info()  { echo -e "${CYAN}ℹ️  $1${NC}"; }
+ok()    { echo -e "${GREEN}✅ $1${NC}"; }
+error() { echo -e "${RED}❌ $1${NC}"; exit 1; }
 
 # ─── Verificar que se ejecuta como root ───────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "Este script debe ejecutarse como root"
-    exit 1
 fi
 
 # ─── Actualizar repositorios ───────────────────────────────────
@@ -47,19 +46,16 @@ step "Configurando repositorio Adoptium para Java 21..."
 mkdir -p /usr/share/keyrings
 
 # Descargar e instalar clave GPG
-info "Descargando clave GPG de Adoptium..."
-if ! curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
-    | gpg --dearmor -o /usr/share/keyrings/adoptium-archive-keyring.gpg; then
+auto_import_key() {
+    curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public |
+      gpg --dearmor -o /usr/share/keyrings/adoptium-archive-keyring.gpg
+}
+if ! auto_import_key; then
     error "Error al descargar la clave GPG de Adoptium"
-    exit 1
 fi
 
-# Verificar que la clave se descargó correctamente
-if [[ ! -f /usr/share/keyrings/adoptium-archive-keyring.gpg ]]; then
+[[ -f /usr/share/keyrings/adoptium-archive-keyring.gpg ]] || \
     error "La clave GPG no se guardó correctamente"
-    exit 1
-fi
-
 ok "Clave GPG de Adoptium instalada"
 
 # ─── Añadir repositorio ────────────────────────────────────────
@@ -68,24 +64,18 @@ info "Añadiendo repositorio Adoptium..."
 # Obtener codename de la distribución
 if [[ -f /etc/os-release ]]; then
     source /etc/os-release
-    CODENAME="$VERSION_CODENAME"
-else
-    CODENAME=$(lsb_release -cs 2>/dev/null || echo "bookworm")
+    CODENAME="${VERSION_CODENAME:-}"
 fi
-
-if [[ -z "$CODENAME" ]]; then
-    warn "No se pudo detectar el codename, usando 'bookworm' por defecto"
-    CODENAME="bookworm"
-fi
-
+CODENAME="${CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+CODENAME="${CODENAME:-bookworm}"
 info "Codename detectado: $CODENAME"
 
 # Crear archivo de repositorio
-cat > /etc/apt/sources.list.d/adoptium.list << EOF
+tee /etc/apt/sources.list.d/adoptium.list > /dev/null << EOF
 # Repositorio Adoptium para Java Temurin
-deb [signed-by=/usr/share/keyrings/adoptium-archive-keyring.gpg] https://packages.adoptium.net/artifactory/deb $CODENAME main
+deb [signed-by=/usr/share/keyrings/adoptium-archive-keyring.gpg] \
+    https://packages.adoptium.net/artifactory/deb $CODENAME main
 EOF
-
 ok "Repositorio Adoptium configurado"
 
 # ─── Actualizar e instalar Java ───────────────────────────────
@@ -95,9 +85,6 @@ apt-get update -qq
 # Verificar que el paquete está disponible
 if ! apt-cache show temurin-21-jdk &>/dev/null; then
     error "El paquete temurin-21-jdk no está disponible en los repositorios"
-    info "Repositorios configurados:"
-    grep -r "adoptium" /etc/apt/sources.list.d/ || true
-    exit 1
 fi
 
 # Instalar Java 21
@@ -108,22 +95,23 @@ ok "Java 21 Temurin instalado"
 step "Configurando Java como versión por defecto..."
 
 # Verificar instalación
-if ! command -v java &>/dev/null; then
-    error "Java no se instaló correctamente"
-    exit 1
-fi
+command -v java &>/dev/null || error "Java no se instaló correctamente"
 
 # Mostrar versión instalada
 info "Verificando instalación de Java..."
 java -version
 javac -version
 
-# Configurar JAVA_HOME globalmente
-JAVA_HOME_PATH=$(readlink -f $(which java) | sed 's|/bin/java||')
-if [[ -d "$JAVA_HOME_PATH" ]]; then
-    echo "export JAVA_HOME=$JAVA_HOME_PATH" > /etc/environment
-    echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/environment
-    ok "JAVA_HOME configurado: $JAVA_HOME_PATH"
+# Determinar JAVA_HOME
+default_home=$(readlink -f "$(which java)" | sed 's|/bin/java||')
+if [[ -d "$default_home" ]]; then
+    # Crear script en profile.d para usuarios interactivos
+    cat > /etc/profile.d/java.sh << EOF
+export JAVA_HOME="$default_home"
+export PATH="\$JAVA_HOME/bin:\$PATH"
+EOF
+    chmod 644 /etc/profile.d/java.sh
+    ok "JAVA_HOME configurado en /etc/profile.d/java.sh: $default_home"
 else
     warn "No se pudo determinar JAVA_HOME automáticamente"
 fi
@@ -136,17 +124,16 @@ ok "Cache limpiado"
 
 # ─── Verificación final ────────────────────────────────────────
 step "Verificación final de la instalación..."
-
 echo
 info "=== INFORMACIÓN DE JAVA INSTALADO ==="
 echo "Versión Java: $(java -version 2>&1 | head -1)"
 echo "Versión Javac: $(javac -version 2>&1)"
 echo "Ubicación Java: $(which java)"
-echo "JAVA_HOME: ${JAVA_HOME_PATH:-"No configurado"}"
+echo "JAVA_HOME: ${default_home:-No configurado}"
 echo
 
-# Verificar que es la versión correcta
-JAVA_VERSION=$(java -version 2>&1 | head -1 | grep -o '[0-9]*' | head -1)
+# Verificar versión
+JAVA_VERSION=$(java -version 2>&1 | grep -oP '"\K[0-9]+' | head -1)
 if [[ "$JAVA_VERSION" == "21" ]]; then
     ok "Java 21 instalado y configurado correctamente"
 else

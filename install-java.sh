@@ -103,7 +103,7 @@ java -version
 javac -version
 
 # Determinar JAVA_HOME
-default_home=$(readlink -f "$(which java)" | sed 's|/bin/java||')
+default_home=$(dirname "$(dirname "$(readlink -f "$(which java)")")")
 if [[ -d "$default_home" ]]; then
     # Crear script en profile.d para usuarios interactivos
     cat > /etc/profile.d/java.sh << EOF
@@ -141,3 +141,4 @@ else
 fi
 
 info "Script de instalación de Java completado"
+info "Si JAVA_HOME no aparece en tu entorno, ejecuta: source /etc/profile.d/java.sh o reinicia la sesión."
